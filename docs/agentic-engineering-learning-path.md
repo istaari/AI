@@ -2699,7 +2699,7 @@ flowchart TD
     STEP --> INC["step_count += 1"]
     INC --> LIMIT{"step_count\n> MAX_STEPS?"}
     LIMIT -- yes --> ABORT["Abort + return\nbest partial answer"]
-    LIMIT -- no --> PROG{"Progress\nmade?"]
+    LIMIT -- no --> PROG{"Progress made?"}
     PROG -- yes --> STEP
     PROG -- no --> STUCK{"Stuck count\n> MAX_STUCK?"}
     STUCK -- yes --> ABORT
