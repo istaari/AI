@@ -50,8 +50,7 @@ def get_product_details(product_id: str) -> dict:
     """Return full details for a product ID, or an error dict."""
     if product_id in PRODUCT_DB:
         return PRODUCT_DB[product_id]
-    return {"error": f"Product '{product_id}' not found. "
-                     f"Valid IDs: {', '.join(PRODUCT_DB)}"}
+    return {"error": f"Product '{product_id}' not found. " f"Valid IDs: {', '.join(PRODUCT_DB)}"}
 
 
 def calculate(expression: str) -> str:

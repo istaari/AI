@@ -3,3 +3,6 @@ google-genai>=1.0.0
 
 # Loads GEMINI_API_KEY and other settings from a local .env file
 python-dotenv>=1.0.0
+
+# LangGraph state-machine framework (§16)
+langgraph>=0.2.0
