@@ -23,9 +23,10 @@ import math
 import re
 from dataclasses import dataclass, field
 
-from google import genai
-from google.genai import types
 from shared.config import SETTINGS
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from shared.config import get_llm
+from shared.config import get_embedder
 
 DIVIDER = "─" * 65
 THICK = "═" * 65
@@ -130,18 +131,10 @@ def chunk_sentences(text: str, doc_id: str, max_sentences: int = 3) -> list[Chun
 # Each ContentEmbedding has a .values attribute that is a list[float].
 
 
-def embed_texts(client: genai.Client, texts: list[str]) -> list[list[float]]:
-    """
-    Embed a batch of texts using the Gemini text-embedding-004 model.
-    Returns a list of float vectors, one per input text.
-
-    IMPORTANT: both index-time and query-time must use the same model.
-    """
-    resp = client.models.embed_content(
-        model=EMBEDDING_MODEL,
-        contents=texts,
-    )
-    return [emb.values for emb in resp.embeddings]
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed a batch of texts using text-embedding-004."""
+    embedder = get_embedder()
+    return embedder.embed_documents(texts)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -223,23 +216,16 @@ def precision_at_k(results: list[SearchResult], relevant_ids: set[str], k: int) 
 # LLM HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def llm(client: genai.Client, system: str, messages: list[dict],
-        max_tokens: int = 512) -> str:
+def llm(system: str, messages: list[dict], max_tokens: int = 512, temperature: float = 0.1) -> str:
     """Single LLM call. messages = [{role, content}, ...]"""
-    contents = [
-        types.Content(role=m["role"], parts=[types.Part(text=m["content"])])
-        for m in messages
-    ]
-    resp = client.models.generate_content(
-        model=SETTINGS.model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0.1,
-            max_output_tokens=max_tokens,
-        ),
-    )
-    return resp.text.strip()
+    chat = get_llm(temperature=temperature, max_tokens=max_tokens)
+    lc_msgs: list = [SystemMessage(content=system)] if system else []
+    for m in messages:
+        if m["role"] == "user":
+            lc_msgs.append(HumanMessage(content=m["content"]))
+        else:
+            lc_msgs.append(AIMessage(content=m["content"]))
+    return chat.invoke(lc_msgs).content.strip()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -267,11 +253,10 @@ class RAGPipeline:
     query(question)   → embed query → similarity search → inject context → LLM answer
     """
 
-    def __init__(self, client: genai.Client, chunk_strategy: str = "sentences"):
+    def __init__(self, chunk_strategy: str = "sentences"):
         """
         chunk_strategy: "fixed" or "sentences"
         """
-        self.client = client
         self.store = VectorStore()
         self.chunk_strategy = chunk_strategy
         self._embedding_dim: int | None = None
@@ -295,7 +280,7 @@ class RAGPipeline:
 
         print(f"  Embedding {len(all_chunks)} chunks with {EMBEDDING_MODEL}...")
         texts = [c.text for c in all_chunks]
-        embeddings = embed_texts(self.client, texts)
+        embeddings = embed_texts(texts)
         self._embedding_dim = len(embeddings[0]) if embeddings else 0
 
         embedded = [EmbeddedChunk(chunk=c, embedding=e) for c, e in zip(all_chunks, embeddings)]
@@ -310,7 +295,7 @@ class RAGPipeline:
         3. Build context string
         4. LLM generates a grounded answer
         """
-        query_emb = embed_texts(self.client, [question])[0]
+        query_emb = embed_texts([question])[0]
         results = self.store.search(query_emb, top_k=top_k)
 
         context = "\n\n".join(
@@ -318,7 +303,7 @@ class RAGPipeline:
             for r in results
         )
         prompt = f"Context:\n{context}\n\nQuestion: {question}"
-        return llm(self.client, ANSWER_SYSTEM, [{"role": "user", "content": prompt}])
+        return llm(ANSWER_SYSTEM, [{"role": "user", "content": prompt}])
 
     def query_with_metrics(
         self,
@@ -330,7 +315,7 @@ class RAGPipeline:
         Run a query and also compute Precision@k.
         Returns (answer, results, precision_score).
         """
-        query_emb = embed_texts(self.client, [question])[0]
+        query_emb = embed_texts([question])[0]
         results = self.store.search(query_emb, top_k=top_k)
         p_at_k = precision_at_k(results, relevant_doc_ids, top_k)
 
@@ -339,7 +324,7 @@ class RAGPipeline:
             for r in results
         )
         prompt = f"Context:\n{context}\n\nQuestion: {question}"
-        answer = llm(self.client, ANSWER_SYSTEM, [{"role": "user", "content": prompt}])
+        answer = llm(ANSWER_SYSTEM, [{"role": "user", "content": prompt}])
         return answer, results, p_at_k
 
 
@@ -407,8 +392,6 @@ def main() -> None:
     print(f"Model: {SETTINGS.model}   Embeddings: {EMBEDDING_MODEL}")
     print(THICK)
 
-    client = genai.Client(api_key=SETTINGS.require_api_key())
-
     # ── §5.2  Show both chunking strategies side-by-side ─────────────────────
     print(f"\n{DIVIDER}")
     print("§5.2  Chunking Strategies (fixed-size vs sentence-boundary)")
@@ -426,7 +409,7 @@ def main() -> None:
     print("§5.3  Embedding Generation  →  §5.4  Building the Vector Store")
     print(DIVIDER)
     print(f"Using sentence-boundary strategy to index {len(DEMO_DOCUMENTS)} documents.")
-    pipeline = RAGPipeline(client, chunk_strategy="sentences")
+    pipeline = RAGPipeline(chunk_strategy="sentences")
     pipeline.index(DEMO_DOCUMENTS)
     print(f"VectorStore: {len(pipeline.store)} chunks indexed.")
 

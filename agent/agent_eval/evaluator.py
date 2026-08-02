@@ -30,9 +30,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from google import genai
-from google.genai import types
 from shared.config import SETTINGS
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from shared.config import get_llm
 
 DIVIDER = "─" * 65
 THICK = "═" * 65
@@ -219,28 +219,22 @@ def replay_trace(trace: Trace) -> None:
 # LLM HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def llm(client: genai.Client, system: str, messages: list[dict],
-        max_tokens: int = 512) -> tuple[str, int, int, float]:
+def llm(system: str, messages: list[dict],
+        max_tokens: int = 512, temperature: float = 0.2) -> tuple[str, int, int, float]:
     """
     Single LLM call. Returns (text, tokens_in, tokens_out, duration_ms).
     Token counts estimated from character length (CHARS_PER_TOKEN).
     """
     t0 = time.monotonic()
-    contents = [
-        types.Content(role=m["role"], parts=[types.Part(text=m["content"])])
-        for m in messages
-    ]
-    resp = client.models.generate_content(
-        model=SETTINGS.model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0.2,
-            max_output_tokens=max_tokens,
-        ),
-    )
+    chat = get_llm(temperature=temperature, max_tokens=max_tokens)
+    lc_msgs: list = [SystemMessage(content=system)] if system else []
+    for m in messages:
+        if m["role"] == "user":
+            lc_msgs.append(HumanMessage(content=m["content"]))
+        else:
+            lc_msgs.append(AIMessage(content=m["content"]))
+    text = chat.invoke(lc_msgs).content.strip()
     duration_ms = (time.monotonic() - t0) * 1000
-    text = resp.text.strip()
     # Estimate tokens from prompt chars + output chars
     prompt_chars = sum(len(m["content"]) for m in messages) + len(system)
     tok_in = prompt_chars // CHARS_PER_TOKEN
@@ -313,7 +307,7 @@ Return ONLY a JSON array of strings. Tools:\n{TOOL_DESCS}"""
 
 
 def run_traced_agent(
-    client: genai.Client, goal: str, tracer: Tracer
+    goal: str, tracer: Tracer
 ) -> str:
     """
     Run a ReAct product-search agent while recording every step in the tracer.
@@ -321,7 +315,7 @@ def run_traced_agent(
     """
     # Planning step
     plan_prompt = goal
-    raw, tok_in, tok_out, dur = llm(client, PLAN_SYSTEM, [{"role": "user", "content": plan_prompt}])
+    raw, tok_in, tok_out, dur = llm(PLAN_SYSTEM, [{"role": "user", "content": plan_prompt}])
     cleaned = re.sub(r"```[a-z]*\n?", "", raw).strip("` \n")
     try:
         steps = json.loads(cleaned) if cleaned.startswith("[") else [goal]
@@ -333,7 +327,7 @@ def run_traced_agent(
     final_answer = "No answer produced."
 
     for _ in range(8):
-        raw, tok_in, tok_out, dur = llm(client, REACT_SYSTEM, history)
+        raw, tok_in, tok_out, dur = llm(REACT_SYSTEM, history)
         history.append({"role": "model", "content": raw})
         cleaned = re.sub(r"```[a-z]*\n?", "", raw).strip("` \n")
         parsed = parse_json(cleaned, {})
@@ -398,7 +392,6 @@ Overall score = floor(average of the three criteria).
 
 
 def judge(
-    client: genai.Client,
     question: str,
     agent_answer: str,
     trace: Optional[Trace] = None,
@@ -417,7 +410,7 @@ def judge(
         tool_trace = f"\nTools called: {', '.join(calls)}" if calls else ""
 
     prompt = f"Question: {question}\nAgent answer: {agent_answer}{tool_trace}"
-    raw, _, _, _ = llm(client, JUDGE_SYSTEM, [{"role": "user", "content": prompt}], max_tokens=256)
+    raw, _, _, _ = llm(JUDGE_SYSTEM, [{"role": "user", "content": prompt}], max_tokens=256)
     parsed = parse_json(raw, {"score": 3, "reasoning": "parse error", "criteria_scores": {}})
 
     score = int(parsed.get("score", 3))
@@ -457,7 +450,6 @@ class DecompositionResult:
 
 
 def score_decomposition(
-    client: genai.Client,
     goal: str,
     trace: Trace,
     expected_tools: list[str],
@@ -487,7 +479,7 @@ def score_decomposition(
             ))
         elif entry.step in ("answer", "llm_call"):
             # LLM judgment for synthesis steps
-            result = judge(client, goal, entry.output, threshold=3)
+            result = judge(goal, entry.output, threshold=3)
             scores.append(StepScore(
                 step_index=i,
                 description=entry.step,
@@ -534,7 +526,6 @@ class BehavioralResult:
 
 
 def run_behavioral_test(
-    client: genai.Client,
     test: BehavioralTest,
     trace: Trace,
     answer: str,
@@ -599,13 +590,12 @@ class SuiteResult:
 
 
 def run_regression_suite(
-    client: genai.Client,
     cases: list[RegressionCase],
     run_agent_fn: Callable,
 ) -> SuiteResult:
     """
     Run a fixed regression suite through the provided agent function.
-    run_agent_fn signature: (client, goal, tracer) -> str
+    run_agent_fn signature: (goal, tracer) -> str
 
     Teaching point (§11.6): the suite catches regressions automatically.
     Any case that previously passed and now fails is a deploy-blocking regression.
@@ -614,10 +604,10 @@ def run_regression_suite(
     for case in cases:
         tracer = Tracer(goal=case.goal)
         with tracer:
-            answer = run_agent_fn(client, case.goal, tracer)
+            answer = run_agent_fn(case.goal, tracer)
         trace = tracer.trace
 
-        judge_result = judge(client, case.goal, answer, trace=trace, threshold=case.min_judge_score)
+        judge_result = judge(case.goal, answer, trace=trace, threshold=case.min_judge_score)
         tools_called = set(trace.tool_calls())
         missing_tools = [t for t in case.expected_tools if t not in tools_called]
         forbidden = [p for p in case.must_not_contain if p.lower() in answer.lower()]
@@ -760,10 +750,7 @@ def main() -> None:
     print(f"Model: {SETTINGS.model}")
     print(THICK)
 
-    client = genai.Client(api_key=SETTINGS.require_api_key())
     DEMO_GOAL = "Find the cheapest in-stock laptop and calculate 10% off its price."
-
-    # ── §11.2  Trace-based Debugging ─────────────────────────────────────────
     print(f"\n{DIVIDER}")
     print("§11.2  Trace-Based Debugging")
     print(DIVIDER)
@@ -771,7 +758,7 @@ def main() -> None:
 
     tracer = Tracer(goal=DEMO_GOAL)
     with tracer:
-        answer = run_traced_agent(client, DEMO_GOAL, tracer)
+        answer = run_traced_agent(DEMO_GOAL, tracer)
     trace = tracer.trace
 
     replay_trace(trace)
@@ -780,7 +767,7 @@ def main() -> None:
     print(f"\n{DIVIDER}")
     print("§11.3  LLM-as-Judge")
     print(DIVIDER)
-    verdict = judge(client, DEMO_GOAL, answer, trace=trace, threshold=3)
+    verdict = judge(DEMO_GOAL, answer, trace=trace, threshold=3)
     status = "✓ PASSED" if verdict.passed else "✗ FAILED"
     print(f"  Question:  \"{DEMO_GOAL[:60]}\"")
     print(f"  Answer:    \"{answer[:80]}\"")
@@ -795,7 +782,7 @@ def main() -> None:
     print("§11.4  Task Decomposition Metrics  (per-step scoring)")
     print(DIVIDER)
     decomp = score_decomposition(
-        client, DEMO_GOAL, trace,
+        DEMO_GOAL, trace,
         expected_tools=["search_products", "check_stock", "calculate"],
     )
     for s in decomp.step_scores:
@@ -830,7 +817,7 @@ def main() -> None:
         ),
     ]
     for test in behavioral_tests[:1]:  # run first test against the existing trace
-        result = run_behavioral_test(client, test, trace, answer)
+        result = run_behavioral_test(test, trace, answer)
         status_sym = "PASSED" if result.passed else "FAILED"
         print(f"  Test: {test.name}")
         print(f"    {status_sym}" + (f" — {result.violations[0]}" if result.violations else ""))
@@ -838,8 +825,8 @@ def main() -> None:
     for test in behavioral_tests[1:]:
         t2 = Tracer(goal=test.goal)
         with t2:
-            a2 = run_traced_agent(client, test.goal, t2)
-        result = run_behavioral_test(client, test, t2.trace, a2)
+            a2 = run_traced_agent(test.goal, t2)
+        result = run_behavioral_test(test, t2.trace, a2)
         status_sym = "PASSED" if result.passed else "FAILED"
         print(f"  Test: {test.name}")
         print(f"    {status_sym}" + (f" — {result.violations[0]}" if result.violations else ""))
@@ -848,7 +835,7 @@ def main() -> None:
     print(f"\n{DIVIDER}")
     print(f"§11.6  Regression Suite  ({len(REGRESSION_CASES)} cases)")
     print(DIVIDER)
-    suite = run_regression_suite(client, REGRESSION_CASES, run_traced_agent)
+    suite = run_regression_suite(REGRESSION_CASES, run_traced_agent)
     for r in suite.results:
         status_sym = "✓ PASS" if r["passed"] else "✗ FAIL"
         print(f"  [{r['id']}] {r['goal']:<55}  {status_sym}  score={r['judge_score']}")

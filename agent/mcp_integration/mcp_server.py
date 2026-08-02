@@ -25,9 +25,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
-from google import genai
-from google.genai import types
 from shared.config import SETTINGS
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from shared.config import get_llm
 
 DIVIDER = "─" * 65
 THICK = "═" * 65
@@ -297,22 +297,16 @@ class MCPClient:
 # LLM HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def llm(client: genai.Client, system: str, messages: list[dict]) -> str:
+def llm(system: str, messages: list[dict], max_tokens: int = 1024, temperature: float = 0.2) -> str:
     """Single LLM call. messages = [{role, content}, ...]"""
-    contents = [
-        types.Content(role=m["role"], parts=[types.Part(text=m["content"])])
-        for m in messages
-    ]
-    resp = client.models.generate_content(
-        model=SETTINGS.model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0.2,
-            max_output_tokens=1024,
-        ),
-    )
-    return resp.text.strip()
+    chat = get_llm(temperature=temperature, max_tokens=max_tokens)
+    lc_msgs: list = [SystemMessage(content=system)] if system else []
+    for m in messages:
+        if m["role"] == "user":
+            lc_msgs.append(HumanMessage(content=m["content"]))
+        else:
+            lc_msgs.append(AIMessage(content=m["content"]))
+    return chat.invoke(lc_msgs).content.strip()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -336,8 +330,7 @@ class MCPAgent:
 
     MAX_ITERATIONS = 6
 
-    def __init__(self, genai_client: genai.Client, mcp_client: MCPClient):
-        self.genai_client = genai_client
+    def __init__(self, mcp_client: MCPClient):
         self.mcp_client = mcp_client
 
     def _build_system(self) -> str:
@@ -363,7 +356,7 @@ Rules:
         history: list[dict] = [{"role": "user", "content": goal}]
 
         for iteration in range(1, self.MAX_ITERATIONS + 1):
-            raw = llm(self.genai_client, system, history)
+            raw = llm(system, history)
             history.append({"role": "model", "content": raw})
 
             cleaned = re.sub(r"```[a-z]*\n?", "", raw).strip("` \n")
@@ -503,16 +496,15 @@ def main() -> None:
     print(f"Model: {SETTINGS.model}")
     print(THICK)
 
-    genai_client = genai.Client(api_key=SETTINGS.require_api_key())
     server = build_company_server()
-    client = MCPClient(server)
+    mcp_client = MCPClient(server)
 
     # ── §6.6  Capability Negotiation Handshake ────────────────────────────────
     print(f"\n{DIVIDER}")
     print("§6.6  Capability Negotiation Handshake")
     print(DIVIDER)
     print(f"Client → initialize  {{protocolVersion: '{MCPServer.PROTOCOL_VERSION}', capabilities: ...}}")
-    negotiated = client.connect()
+    negotiated = mcp_client.connect()
     caps = {k for k, v in negotiated.get("capabilities", {}).items() if v is not None}
     print(f"Server ← protocolVersion: {negotiated['protocolVersion']}")
     print(f"         serverInfo: {negotiated['serverInfo']}")
@@ -522,7 +514,7 @@ def main() -> None:
     print(f"\n{DIVIDER}")
     print("§6.2  Tool Discovery (dynamic — agent never hardcodes names)")
     print(DIVIDER)
-    tools = client.list_tools()
+    tools = mcp_client.list_tools()
     print(f"Discovered {len(tools)} tool(s):")
     for t in tools:
         props = t.get("inputSchema", {}).get("properties", {})
@@ -533,28 +525,28 @@ def main() -> None:
     print(f"\n{DIVIDER}")
     print("§6.3  Resources (read-only) vs Tools (side effects)")
     print(DIVIDER)
-    resources = client.list_resources()
+    resources = mcp_client.list_resources()
     print(f"Discovered {len(resources)} resource(s):")
     for r in resources:
         print(f"  - {r['uri']} — {r['description']}")
 
     print("\nReading resource://company/faq  (no side effects):")
-    faq = client.read_resource("resource://company/faq")
+    faq = mcp_client.read_resource("resource://company/faq")
     for line in faq.splitlines()[:3]:
         print(f"  {line}")
     print("  ...")
 
     print("\nCalling tool 'log_query'  (has side effects — writes to audit log):")
-    result = client.call_tool("log_query", {"query": "demo-probe", "result": "test"})
+    result = mcp_client.call_tool("log_query", {"query": "demo-probe", "result": "test"})
     print(f"  → {result}")
 
     # ── §6.4  Prompts as First-Class Citizens ─────────────────────────────────
     print(f"\n{DIVIDER}")
     print("§6.4  Prompts as First-Class Citizens")
     print(DIVIDER)
-    prompts = client.list_prompts()
+    prompts = mcp_client.list_prompts()
     print(f"Discovered {len(prompts)} prompt(s): {', '.join(p['name'] for p in prompts)}")
-    rendered = client.get_prompt("summarise_policy", {"topic": "refund"})
+    rendered = mcp_client.get_prompt("summarise_policy", {"topic": "refund"})
     print(f"Rendered prompt for topic='refund':")
     print(f"  \"{rendered}\"")
 
@@ -568,7 +560,7 @@ def main() -> None:
     goal = "What is the refund policy for digital goods, and log that query."
     print(f"Goal: \"{goal}\"\n")
 
-    agent = MCPAgent(genai_client, client)
+    agent = MCPAgent(mcp_client)
     answer = agent.run(goal)
 
     print(f"\n{THICK}")

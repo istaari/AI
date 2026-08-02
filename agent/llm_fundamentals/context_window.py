@@ -21,9 +21,9 @@ What to observe:
     - The failure is gradual: occasional misses before consistent failure.
 """
 
-from google import genai
-from google.genai import types
 from shared.config import SETTINGS
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from shared.config import get_llm
 
 # ── Anchor instruction planted in the system prompt ──────────────────────────
 ANCHOR_PHRASE = "ANCHOR_OK"
@@ -73,8 +73,6 @@ def estimate_tokens(messages: list[dict]) -> int:
 
 
 def main() -> None:
-    client = genai.Client(api_key=SETTINGS.require_api_key())
-
     print("Context Window Experiment")
     print(f"Model : {SETTINGS.model}")
     print(f"Anchor: every response must end with {ANCHOR_PHRASE!r}")
@@ -91,23 +89,10 @@ def main() -> None:
         # Add the user question to history
         history.append({"role": "user", "content": question})
 
-        # Build the contents list for the API call
-        contents = [types.Content(role=m["role"], parts=[types.Part(text=m["content"])])
-                    for m in history]
+        answer = get_llm(temperature=0.7, max_tokens=MAX_TOKENS_PER_TURN).invoke(
+            [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=question)]
+        ).content.strip()
 
-        resp = client.models.generate_content(
-            model=SETTINGS.model,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=0.7,
-                top_p=SETTINGS.top_p,
-                top_k=SETTINGS.top_k,
-                max_output_tokens=MAX_TOKENS_PER_TURN,
-            ),
-        )
-
-        answer = resp.text.strip()
         history.append({"role": "model", "content": answer})
 
         anchor_present = check_anchor(answer)

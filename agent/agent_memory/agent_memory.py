@@ -21,9 +21,9 @@ Learning goals:
 import json
 from datetime import datetime
 
-from google import genai
-from google.genai import types
 from shared.config import SETTINGS
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from shared.config import get_llm
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -207,20 +207,16 @@ class ProceduralMemory:
 # LLM HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def llm(client: genai.Client, system: str, messages: list[dict], max_tokens: int = 512) -> str:
-    contents = [
-        types.Content(role=m["role"], parts=[types.Part(text=m["content"])]) for m in messages
-    ]
-    resp = client.models.generate_content(
-        model=SETTINGS.model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0.3,
-            max_output_tokens=max_tokens,
-        ),
-    )
-    return resp.text.strip()
+def llm(system: str, messages: list[dict], max_tokens: int = 512, temperature: float = 0.3) -> str:
+    """Single LLM call. messages = [{role, content}, ...]"""
+    chat = get_llm(temperature=temperature, max_tokens=max_tokens)
+    lc_msgs: list = [SystemMessage(content=system)] if system else []
+    for m in messages:
+        if m["role"] == "user":
+            lc_msgs.append(HumanMessage(content=m["content"]))
+        else:
+            lc_msgs.append(AIMessage(content=m["content"]))
+    return chat.invoke(lc_msgs).content.strip()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -238,8 +234,7 @@ class MemoryAgent:
         session_end()    — summarise session and persist to episodic memory
     """
 
-    def __init__(self, client: genai.Client):
-        self.client = client
+    def __init__(self):
 
         # ── Initialise the four memory types ─────────────────────────────────
         self.working   = WorkingMemory(max_messages=8)      # short-term buffer
@@ -326,7 +321,7 @@ class MemoryAgent:
 
         # TODO: step 3 — get system prompt from procedural memory and call LLM
         system_prompt = self.procedural.get_prompt(self._active_routine) or ""
-        reply = llm(self.client, system_prompt, self.working.get())
+        reply = llm(system_prompt, self.working.get())
 
         # TODO: step 4 — add reply to working memory (role "model")
         self.working.add("model", reply)
@@ -386,12 +381,11 @@ def print_memory_state(agent: MemoryAgent) -> None:
 
 
 def main() -> None:
-    client = genai.Client(api_key=SETTINGS.require_api_key())
     print("Agentic Memory Exercise (§4)")
     print(f"Model: {SETTINGS.model}")
     print(DIVIDER)
 
-    agent = MemoryAgent(client)
+    agent = MemoryAgent()
 
     # ── Session 1 ─────────────────────────────────────────────────────────────
     print("\n[SESSION 1 START]")

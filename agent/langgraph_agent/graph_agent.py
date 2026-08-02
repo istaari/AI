@@ -31,17 +31,17 @@ import operator
 import re
 from typing import Annotated, TypedDict
 
-from google import genai
-from google.genai import types
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from shared.config import SETTINGS
+from shared.config import SETTINGS, get_llm
 
 DIVIDER = "─" * 65
 THICK = "═" * 65
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Module-level Gemini client — set in main() before any graph.invoke() call.
+# Module-level LangChain chat model — set in main() before any graph.invoke() call.
 #
 # Teaching point: LangGraph nodes are plain functions with signature
 # (state: SupportState) -> dict. They cannot accept extra constructor args.
@@ -49,7 +49,7 @@ THICK = "═" * 65
 # or a closure. We use a module-level variable for maximum clarity.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_client: genai.Client | None = None
+_llm: BaseChatModel | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -88,23 +88,16 @@ class SupportState(TypedDict):
 # LLM HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def llm(system: str, messages: list[dict], max_tokens: int = 512) -> str:
-    """Single LLM call using the module-level _client."""
-    assert _client is not None, "_client must be set before calling llm()"
-    contents = [
-        types.Content(role=m["role"], parts=[types.Part(text=m["content"])])
-        for m in messages
-    ]
-    resp = _client.models.generate_content(
-        model=SETTINGS.model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0.3,
-            max_output_tokens=max_tokens,
-        ),
-    )
-    return resp.text.strip()
+def llm(system: str, messages: list[dict], max_tokens: int = 512, temperature: float = 0.3) -> str:
+    """Single LLM call using the module-level _llm model."""
+    assert _llm is not None, "_llm must be set before calling llm()"
+    lc_msgs: list = [SystemMessage(content=system)] if system else []
+    for m in messages:
+        if m["role"] == "user":
+            lc_msgs.append(HumanMessage(content=m["content"]))
+        else:
+            lc_msgs.append(AIMessage(content=m["content"]))
+    return _llm.invoke(lc_msgs).content.strip()
 
 
 def parse_json(raw: str, fallback: dict) -> dict:
@@ -292,13 +285,13 @@ DEMO_QUERIES = [
 
 
 def main() -> None:
-    global _client
+    global _llm
     print(THICK)
     print("LangGraph Agent Exercise")
     print(f"Model: {SETTINGS.model}")
     print(THICK)
 
-    _client = genai.Client(api_key=SETTINGS.require_api_key())
+    _llm = get_llm(temperature=0.3)
 
     # ── Print graph topology ──────────────────────────────────────────────────
     print(f"\n{DIVIDER}")

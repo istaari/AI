@@ -27,9 +27,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-from google import genai
-from google.genai import types
 from shared.config import SETTINGS
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from shared.config import get_llm
 
 DIVIDER = "─" * 65
 THICK = "═" * 65
@@ -108,7 +108,7 @@ Score 0-10 where:
 Return ONLY JSON: {"score": N, "reason": "one sentence"}"""
 
 
-def score_confidence(client: genai.Client, draft: str, task: str) -> float:
+def score_confidence(draft: str, task: str) -> float:
     """
     Ask the LLM to self-score its draft quality 0-10; normalise to 0.0-1.0.
 
@@ -117,22 +117,10 @@ def score_confidence(client: genai.Client, draft: str, task: str) -> float:
     classifier trained on human-annotated examples. Here it serves as a
     pedagogical proxy to demonstrate the threshold pattern.
     """
-    contents = [
-        types.Content(
-            role="user",
-            parts=[types.Part(text=f"Task: {task}\n\nDraft:\n{draft}")],
-        )
-    ]
-    resp = client.models.generate_content(
-        model=SETTINGS.model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=CONFIDENCE_SYSTEM,
-            temperature=0.1,
-            max_output_tokens=128,
-        ),
-    )
-    raw = resp.text.strip()
+    raw = get_llm(temperature=0.1, max_tokens=128).invoke([
+        SystemMessage(content=CONFIDENCE_SYSTEM),
+        HumanMessage(content=f"Task: {task}\n\nDraft:\n{draft}"),
+    ]).content.strip()
     cleaned = re.sub(r"```[a-z]*\n?", "", raw).strip("` \n")
     try:
         parsed = json.loads(cleaned)
@@ -246,7 +234,7 @@ Keep all content that is not addressed by the correction.
 Return ONLY the revised document text — no JSON, no preamble."""
 
 
-def apply_correction(draft: str, correction: str, client: genai.Client) -> str:
+def apply_correction(draft: str, correction: str) -> str:
     """
     Revise the draft to incorporate the human correction.
 
@@ -255,17 +243,10 @@ def apply_correction(draft: str, correction: str, client: genai.Client) -> str:
     This preserves the draft's existing quality while applying the human's note.
     """
     prompt = f"Original draft:\n{draft}\n\nHuman correction: {correction}"
-    contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
-    resp = client.models.generate_content(
-        model=SETTINGS.model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=CORRECTION_SYSTEM,
-            temperature=0.2,
-            max_output_tokens=600,
-        ),
-    )
-    return resp.text.strip()
+    return get_llm(temperature=0.2, max_tokens=600).invoke([
+        SystemMessage(content=CORRECTION_SYSTEM),
+        HumanMessage(content=prompt),
+    ]).content.strip()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,23 +280,17 @@ def degrade_gracefully(action: str, reason: str) -> dict:
 # LLM HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def llm(client: genai.Client, system: str, messages: list[dict],
-        max_tokens: int = 600) -> str:
+def llm(system: str, messages: list[dict],
+        max_tokens: int = 600, temperature: float = 0.3) -> str:
     """Single LLM call. messages = [{role, content}, ...]"""
-    contents = [
-        types.Content(role=m["role"], parts=[types.Part(text=m["content"])])
-        for m in messages
-    ]
-    resp = client.models.generate_content(
-        model=SETTINGS.model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0.3,
-            max_output_tokens=max_tokens,
-        ),
-    )
-    return resp.text.strip()
+    chat = get_llm(temperature=temperature, max_tokens=max_tokens)
+    lc_msgs: list = [SystemMessage(content=system)] if system else []
+    for m in messages:
+        if m["role"] == "user":
+            lc_msgs.append(HumanMessage(content=m["content"]))
+        else:
+            lc_msgs.append(AIMessage(content=m["content"]))
+    return chat.invoke(lc_msgs).content.strip()
 
 
 def parse_json(raw: str, fallback: dict) -> dict:
@@ -355,13 +330,12 @@ class DocumentDraftingAgent:
 
     AUTO_APPROVE_THRESHOLD = 0.75
 
-    def __init__(self, client: genai.Client, store: CheckpointStore):
-        self.client = client
+    def __init__(self, store: CheckpointStore):
         self.store = store
 
     def draft(self, topic: str) -> tuple[str, str]:
         """Phase 1: Generate the initial draft. Returns (title, draft_text)."""
-        raw = llm(self.client, DRAFTER_SYSTEM, [{"role": "user", "content": f"Topic: {topic}"}])
+        raw = llm(DRAFTER_SYSTEM, [{"role": "user", "content": f"Topic: {topic}"}])
         parsed = parse_json(raw, {"draft": raw, "title": "Draft"})
         return parsed.get("title", "Draft"), parsed.get("draft", raw)
 
@@ -371,11 +345,11 @@ class DocumentDraftingAgent:
         Returns (edited_draft, confidence_score, changes_made).
         The confidence score determines whether Phase 3 needs escalation.
         """
-        raw = llm(self.client, EDITOR_SYSTEM, [{"role": "user", "content": f"Draft:\n{draft}"}])
+        raw = llm(EDITOR_SYSTEM, [{"role": "user", "content": f"Draft:\n{draft}"}])
         parsed = parse_json(raw, {"edited_draft": draft, "changes_made": []})
         edited = parsed.get("edited_draft", draft)
         changes = parsed.get("changes_made", [])
-        confidence = score_confidence(self.client, edited, task)
+        confidence = score_confidence(edited, task)
         return edited, confidence, changes
 
     def publish(self, title: str, draft: str, step_index: int) -> dict:
@@ -404,7 +378,7 @@ class DocumentDraftingAgent:
                 print(f"\n  §13.3  Correction loop (attempt {attempt})")
                 print(f"  Correction: \"{correction}\"")
                 print("  Revising from correction point (not from scratch)...")
-                current_draft = apply_correction(current_draft, correction, self.client)
+                current_draft = apply_correction(current_draft, correction)
                 preview = current_draft[:80].replace('\n', ' ')
                 print(f"  Revised preview: \"{preview}...\"")
                 if attempt < MAX_CORRECTION_ROUNDS + 1:
@@ -497,7 +471,7 @@ def main() -> None:
             topic = DEMO_TOPICS[0]
 
     store = CheckpointStore()
-    agent = DocumentDraftingAgent(genai.Client(api_key=SETTINGS.require_api_key()), store)
+    agent = DocumentDraftingAgent(store)
     agent.run(topic)
 
     # Show checkpoint audit trail

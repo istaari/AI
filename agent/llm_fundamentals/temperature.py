@@ -12,9 +12,9 @@ What to observe:
     - temperature=1.2: high variation — may diverge significantly or lose coherence
 """
 
-from google import genai
-from google.genai import types
 from shared.config import SETTINGS
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from shared.config import get_llm
 
 PROMPT = (
     "You are a creative writer. Write a one-sentence opening line for a science fiction "
@@ -27,25 +27,12 @@ RUNS_PER_TEMP = 2
 
 
 def run_at_temperature(
-    gemini_client: genai.Client,
     temperature: float,
-    runs: int,
-) -> list[str]:
-    responses = []
-    for _ in range(runs):
-        resp = gemini_client.models.generate_content(
-            model=SETTINGS.model,
-            contents=PROMPT,
-            config=types.GenerateContentConfig(
-                temperature=temperature,
-                top_p=SETTINGS.top_p,
-                top_k=SETTINGS.top_k,
-                max_output_tokens=SETTINGS.max_output_tokens,
-                seed=SETTINGS.seed,
-            ),
-        )
-        responses.append(resp.text.strip())
-    return responses
+    prompt: str,
+) -> str:
+    return get_llm(temperature=temperature, max_tokens=SETTINGS.max_output_tokens).invoke(
+        [HumanMessage(content=prompt)]
+    ).content.strip()
 
 
 def are_all_identical(responses: list[str]) -> bool:
@@ -57,8 +44,6 @@ def unique_count(responses: list[str]) -> int:
 
 
 def main() -> None:
-    gemini_client = genai.Client(api_key=SETTINGS.require_api_key())
-
     print(f"Prompt: {PROMPT!r}")
     print(f"Model:  {SETTINGS.model}")
     print(f"Seed:   {SETTINGS.seed}  (set GEMINI_SEED in .env for reproducibility)")
@@ -66,7 +51,7 @@ def main() -> None:
 
     for temp in TEMPERATURES:
         print(f"\n── temperature={temp} ── ({RUNS_PER_TEMP} runs)")
-        responses = run_at_temperature(gemini_client, temp, RUNS_PER_TEMP)
+        responses = [run_at_temperature(temp, PROMPT) for _ in range(RUNS_PER_TEMP)]
 
         for i, r in enumerate(responses, 1):
             print(f"  [{i}] {r}")

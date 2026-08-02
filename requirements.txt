@@ -1,8 +1,44 @@
-# Core Gemini SDK
-google-genai>=1.0.0
+# LangChain provider-agnostic LLM interface (swap providers in shared/config.py)
+langchain-core>=0.3.0
+langchain-google-genai>=2.0.0
 
 # Loads GEMINI_API_KEY and other settings from a local .env file
 python-dotenv>=1.0.0
 
 # LangGraph state-machine framework (§16)
 langgraph>=0.2.0
+
+# ── Neural Network & Deep Learning ──────────────────────────────────────────
+
+# Core deep learning framework (CPU build — for GPU: pip install torch --index-url https://download.pytorch.org/whl/cu121)
+torch>=2.3.0
+torchvision>=0.18.0        # image datasets, transforms, pretrained CNNs
+torchaudio>=2.3.0          # audio datasets and transforms
+
+# Numerical computing
+numpy>=1.26.0
+scipy>=1.13.0              # statistics, signal processing
+
+# Data handling & visualization
+pandas>=2.2.0
+matplotlib>=3.9.0
+seaborn>=0.13.0            # statistical plots
+
+# Hugging Face ecosystem — pretrained models, tokenizers, datasets
+transformers>=4.42.0       # BERT, GPT-2, T5, LLaMA and 100k+ models
+datasets>=2.20.0           # HF dataset hub
+tokenizers>=0.19.0         # fast BPE / WordPiece tokenizers
+huggingface-hub>=0.23.0    # model/dataset download
+
+# Parameter-efficient fine-tuning (LoRA, QLoRA, adapters)
+peft>=0.11.0
+
+# Accelerated training utilities (mixed precision, distributed, gradient accumulation)
+accelerate>=0.31.0
+
+# Evaluation metrics
+evaluate>=0.4.0            # unified metric API (accuracy, F1, BLEU, ROUGE, perplexity)
+scikit-learn>=1.5.0        # classical ML + confusion matrix, ROC-AUC
+
+# Experiment tracking
+tensorboard>=2.17.0        # loss curves, weight histograms

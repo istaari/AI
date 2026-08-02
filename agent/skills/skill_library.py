@@ -30,9 +30,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable
 
-from google import genai
-from google.genai import types
-from shared.config import SETTINGS
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.language_models import BaseChatModel
+from shared.config import SETTINGS, get_llm, get_embedder
 
 DIVIDER = "─" * 65
 THICK = "═" * 65
@@ -41,35 +41,23 @@ THICK = "═" * 65
 # §8.1 — LLM HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-_client: genai.Client | None = None
+_llm: BaseChatModel | None = None
 
 
-def llm(system: str, messages: list[dict], max_tokens: int = 512) -> str:
-    assert _client is not None, "_client must be set before calling llm()"
-    contents = [
-        types.Content(role=m["role"], parts=[types.Part(text=m["content"])])
-        for m in messages
-    ]
-    resp = _client.models.generate_content(
-        model=SETTINGS.model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0.3,
-            max_output_tokens=max_tokens,
-        ),
-    )
-    return resp.text.strip()
+def llm(system: str, messages: list[dict], max_tokens: int = 512, temperature: float = 0.3) -> str:
+    assert _llm is not None, "_llm must be set before calling llm()"
+    lc_msgs: list = [SystemMessage(content=system)] if system else []
+    for m in messages:
+        if m["role"] == "user":
+            lc_msgs.append(HumanMessage(content=m["content"]))
+        else:
+            lc_msgs.append(AIMessage(content=m["content"]))
+    return _llm.invoke(lc_msgs).content.strip()
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed a batch of texts using Gemini text-embedding-004."""
-    assert _client is not None, "_client must be set before calling embed_texts()"
-    result = _client.models.embed_content(
-        model="models/text-embedding-004",
-        contents=texts,
-    )
-    return [e.values for e in result.embeddings]
+    """Embed a batch of texts using text-embedding-004."""
+    return get_embedder().embed_documents(texts)
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -592,13 +580,13 @@ def conditional(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    global _client
+    global _llm
     print(THICK)
     print("Skills & Capabilities Architecture (§8)")
     print(f"Model: {SETTINGS.model}")
     print(THICK)
 
-    _client = genai.Client(api_key=SETTINGS.require_api_key())
+    _llm = get_llm(temperature=0.3)
 
     word_count_tool = WordCountTool()
     detect_lang_tool = DetectLanguageTool()

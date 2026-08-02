@@ -26,9 +26,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Optional
 
-from google import genai
-from google.genai import types
 from shared.config import SETTINGS
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from shared.config import get_llm
 
 DIVIDER = "─" * 65
 THICK = "═" * 65
@@ -66,23 +66,16 @@ class AgentOutput:
 # LLM HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def llm(client: genai.Client, system: str, messages: list[dict],
-        max_tokens: int = 1024) -> str:
+def llm(system: str, messages: list[dict], max_tokens: int = 1024, temperature: float = 0.3) -> str:
     """Single LLM call. messages = [{role, content}, ...]"""
-    contents = [
-        types.Content(role=m["role"], parts=[types.Part(text=m["content"])])
-        for m in messages
-    ]
-    resp = client.models.generate_content(
-        model=SETTINGS.model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0.3,
-            max_output_tokens=max_tokens,
-        ),
-    )
-    return resp.text.strip()
+    chat = get_llm(temperature=temperature, max_tokens=max_tokens)
+    lc_msgs: list = [SystemMessage(content=system)] if system else []
+    for m in messages:
+        if m["role"] == "user":
+            lc_msgs.append(HumanMessage(content=m["content"]))
+        else:
+            lc_msgs.append(AIMessage(content=m["content"]))
+    return chat.invoke(lc_msgs).content.strip()
 
 
 def parse_json(raw: str, fallback: dict) -> dict:
@@ -111,8 +104,7 @@ class BaseAgent:
 
     SYSTEM = ""   # override in subclasses
 
-    def __init__(self, client: genai.Client, name: str):
-        self.client = client
+    def __init__(self, name: str):
         self.name = name
 
     def run(self, inp: AgentInput) -> AgentOutput:
@@ -129,7 +121,7 @@ Return ONLY JSON:
 
     def run(self, inp: AgentInput) -> AgentOutput:
         prompt = f"Task: {inp.task}\nTopic context: {json.dumps(inp.context)}"
-        raw = llm(self.client, self.SYSTEM, [{"role": "user", "content": prompt}])
+        raw = llm(self.SYSTEM, [{"role": "user", "content": prompt}])
         parsed = parse_json(raw, {"facts": [], "summary": raw})
         facts = parsed.get("facts", [])
         summary = parsed.get("summary", "")
@@ -154,7 +146,7 @@ Return ONLY JSON:
         facts = inp.context.get("facts", [])
         facts_str = "\n".join(f"- {f}" for f in facts) if facts else "No prior research available."
         prompt = f"Task: {inp.task}\n\nResearch facts:\n{facts_str}"
-        raw = llm(self.client, self.SYSTEM, [{"role": "user", "content": prompt}])
+        raw = llm(self.SYSTEM, [{"role": "user", "content": prompt}])
         parsed = parse_json(raw, {"draft": raw, "title": "Draft", "word_count": 0})
         draft = parsed.get("draft", raw)
         title = parsed.get("title", "Draft")
@@ -180,7 +172,7 @@ Return ONLY JSON:
         facts = inp.context.get("facts", [])
         facts_str = "\n".join(f"- {f}" for f in facts) if facts else "No research facts provided."
         prompt = f"Draft to check:\n{draft}\n\nReference facts:\n{facts_str}"
-        raw = llm(self.client, self.SYSTEM, [{"role": "user", "content": prompt}])
+        raw = llm(self.SYSTEM, [{"role": "user", "content": prompt}])
         parsed = parse_json(raw, {"verdict": "PASS", "issues": [], "revised_draft": draft})
         verdict = parsed.get("verdict", "PASS")
         issues = parsed.get("issues", [])
@@ -206,7 +198,7 @@ Return ONLY JSON:
     def run(self, inp: AgentInput) -> AgentOutput:
         draft = inp.context.get("draft", inp.context.get("result", inp.task))
         prompt = f"Original task: {inp.task}\n\nDraft to review:\n{draft}"
-        raw = llm(self.client, self.SYSTEM, [{"role": "user", "content": prompt}])
+        raw = llm(self.SYSTEM, [{"role": "user", "content": prompt}])
         parsed = parse_json(raw, {
             "completeness": 7, "clarity": 7,
             "verdict": "PASS", "notes": "", "final_draft": draft,
@@ -277,7 +269,7 @@ def _estimate_tokens(text: str) -> int:
 # Show how independent sub-tasks can run concurrently with ThreadPoolExecutor.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def demo_parallel_fanout(client: genai.Client, goal: str) -> None:
+def demo_parallel_fanout(goal: str) -> None:
     """
     Demonstrate §9.3: fan out two independent research subtasks in parallel,
     then collect results. Uses only stdlib concurrent.futures.
@@ -291,8 +283,8 @@ def demo_parallel_fanout(client: genai.Client, goal: str) -> None:
         f"Research key players and competitive landscape for: {goal}",
     ]
 
-    researcher_a = ResearchAgent(client, "researcher_A")
-    researcher_b = ResearchAgent(client, "researcher_B")
+    researcher_a = ResearchAgent("researcher_A")
+    researcher_b = ResearchAgent("researcher_B")
     agents_tasks = [
         (researcher_a, AgentInput(task=subtasks[0])),
         (researcher_b, AgentInput(task=subtasks[1])),
@@ -360,10 +352,9 @@ class SupervisorAgent:
         "reviewer":     ReviewerAgent,
     }
 
-    def __init__(self, client: genai.Client):
-        self.client = client
+    def __init__(self):
         self.agents = {
-            name: cls(client, name)
+            name: cls(name)
             for name, cls in self.AGENT_CLASSES.items()
         }
 
@@ -407,7 +398,7 @@ class SupervisorAgent:
             completed=", ".join(completed) if completed else "none",
             step=step,
         )
-        raw = llm(self.client, system, [{"role": "user", "content": f"Goal: {goal}"}], max_tokens=256)
+        raw = llm(system, [{"role": "user", "content": f"Goal: {goal}"}], max_tokens=256)
         parsed = parse_json(raw, {"next_agent": "DONE", "reasoning": "parse error"})
         return parsed.get("next_agent", "DONE"), parsed.get("reasoning", "")
 
@@ -480,8 +471,6 @@ def main() -> None:
     print(f"Model: {SETTINGS.model}")
     print(THICK)
 
-    client = genai.Client(api_key=SETTINGS.require_api_key())
-
     # ── §9.2  Show agent contracts ────────────────────────────────────────────
     print(f"\n{DIVIDER}")
     print("§9.2  Agent Contracts  (typed input/output + failure modes)")
@@ -494,7 +483,7 @@ def main() -> None:
     print("  Output: AgentOutput(agent_name, result, facts, status, error)")
     print("  Status: 'success' | 'failure' | 'degraded'")
 
-    supervisor = SupervisorAgent(client)
+    supervisor = SupervisorAgent()
 
     # ── §9.1  Deterministic routing ───────────────────────────────────────────
     print(f"\n{DIVIDER}")
@@ -526,7 +515,7 @@ def main() -> None:
     llm_result = supervisor.run(DEMO_GOAL, routing="llm")
 
     # ── §9.3  Parallel fan-out ────────────────────────────────────────────────
-    demo_parallel_fanout(client, DEMO_GOAL)
+    demo_parallel_fanout(DEMO_GOAL)
 
     # ── §9.6  Failure propagation demo ───────────────────────────────────────
     print(f"\n{DIVIDER}")
@@ -538,7 +527,7 @@ def main() -> None:
         def run(self, inp: AgentInput) -> AgentOutput:
             raise RuntimeError("Simulated API timeout")
 
-    broken = BrokenResearcher(client, "researcher")
+    broken = BrokenResearcher("researcher")
     out = supervisor._execute_with_fallback(broken, AgentInput(task="test"), retries=1)
     print(f"  Final status: {out.status}  |  error: {out.error}")
     print(f"  Pipeline receives degraded output and continues (no crash).")

@@ -50,3 +50,38 @@ class Settings:
 
 
 SETTINGS = Settings()
+
+
+# --------------------------------------------------------------------------- #
+# Provider-agnostic LLM factory
+# --------------------------------------------------------------------------- #
+# All agent modules call get_llm() to obtain a BaseChatModel.
+# To switch providers, change only this function — every module inherits the swap.
+#
+# Example — switch to OpenAI:
+#   from langchain_openai import ChatOpenAI
+#   return ChatOpenAI(model="gpt-4o", temperature=temperature, max_tokens=max_tokens)
+#
+# Example — switch to Anthropic:
+#   from langchain_anthropic import ChatAnthropic
+#   return ChatAnthropic(model="claude-opus-4-6", temperature=temperature, max_tokens=max_tokens)
+def get_llm(temperature: float = 0.3, max_tokens: int = 1024):
+    """Return a provider-agnostic LangChain chat model (default: Gemini)."""
+    from langchain_google_genai import ChatGoogleGenerativeAI  # lazy import
+
+    return ChatGoogleGenerativeAI(
+        model=SETTINGS.model,
+        google_api_key=SETTINGS.require_api_key(),
+        temperature=temperature,
+        max_output_tokens=max_tokens,
+    )
+
+
+def get_embedder():
+    """Return a provider-agnostic LangChain embeddings model (default: Gemini text-embedding-004)."""
+    from langchain_google_genai import GoogleGenerativeAIEmbeddings  # lazy import
+
+    return GoogleGenerativeAIEmbeddings(
+        model="models/text-embedding-004",
+        google_api_key=SETTINGS.require_api_key(),
+    )

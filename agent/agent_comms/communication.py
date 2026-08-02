@@ -35,9 +35,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-from google import genai
-from google.genai import types
 from shared.config import SETTINGS
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from shared.config import get_llm
 
 DIVIDER = "─" * 65
 THICK = "═" * 65
@@ -468,21 +468,16 @@ def run_async_pipeline(orders: list[dict], channel_size: int = 3) -> tuple[list[
 # LLM HELPER  (used for a brief AI-powered summary in the demo)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def llm(client: genai.Client, system: str, messages: list[dict]) -> str:
-    contents = [
-        types.Content(role=m["role"], parts=[types.Part(text=m["content"])])
-        for m in messages
-    ]
-    resp = client.models.generate_content(
-        model=SETTINGS.model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0.2,
-            max_output_tokens=256,
-        ),
-    )
-    return resp.text.strip()
+def llm(system: str, messages: list[dict], max_tokens: int = 256, temperature: float = 0.2) -> str:
+    """Single LLM call. messages = [{role, content}, ...]"""
+    chat = get_llm(temperature=temperature, max_tokens=max_tokens)
+    lc_msgs: list = [SystemMessage(content=system)] if system else []
+    for m in messages:
+        if m["role"] == "user":
+            lc_msgs.append(HumanMessage(content=m["content"]))
+        else:
+            lc_msgs.append(AIMessage(content=m["content"]))
+    return chat.invoke(lc_msgs).content.strip()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

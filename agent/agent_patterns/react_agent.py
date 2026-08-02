@@ -24,9 +24,9 @@ The four patterns are clearly labelled in the code with # ── Pattern ── 
 import json
 import re
 
-from google import genai
-from google.genai import types
 from shared.config import SETTINGS
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from shared.config import get_llm
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TOOLS  (deterministic functions — no LLM involvement)
@@ -132,21 +132,16 @@ def call_tool(name: str, args: dict) -> str:
 # LLM HELPER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def llm(client: genai.Client, system: str, messages: list[dict]) -> str:
+def llm(system: str, messages: list[dict], max_tokens: int = 1024, temperature: float = 0.2) -> str:
     """Single LLM call. messages = [{role, content}, ...]"""
-    contents = [
-        types.Content(role=m["role"], parts=[types.Part(text=m["content"])]) for m in messages
-    ]
-    resp = client.models.generate_content(
-        model=SETTINGS.model,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=0.2,
-            max_output_tokens=1024,
-        ),
-    )
-    return resp.text.strip()
+    chat = get_llm(temperature=temperature, max_tokens=max_tokens)
+    lc_msgs: list = [SystemMessage(content=system)] if system else []
+    for m in messages:
+        if m["role"] == "user":
+            lc_msgs.append(HumanMessage(content=m["content"]))
+        else:
+            lc_msgs.append(AIMessage(content=m["content"]))
+    return chat.invoke(lc_msgs).content.strip()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -166,9 +161,9 @@ Return ONLY a JSON array of step strings. Example:
 No explanation. No markdown. Just the JSON array."""
 
 
-def plan(client: genai.Client, goal: str) -> list[str]:
+def plan(goal: str) -> list[str]:
     """Break the goal into a list of sub-task strings."""
-    response = llm(client, PLANNER_SYSTEM, [{"role": "user", "content": goal}])
+    response = llm(PLANNER_SYSTEM, [{"role": "user", "content": goal}])
     # Strip markdown fences if the model adds them
     cleaned = re.sub(r"```[a-z]*\n?", "", response).strip("` \n")
     try:
@@ -205,7 +200,7 @@ Rules:
 - Stop as soon as you have enough information to answer the step."""
 
 
-def react_step(client: genai.Client, task: str, max_iterations: int = 6) -> str:
+def react_step(task: str, max_iterations: int = 6) -> str:
     """
     Run a ReAct loop for a single task step.
     Returns the step answer as a string.
@@ -213,7 +208,7 @@ def react_step(client: genai.Client, task: str, max_iterations: int = 6) -> str:
     history: list[dict] = [{"role": "user", "content": task}]
 
     for iteration in range(1, max_iterations + 1):
-        raw = llm(client, REACT_SYSTEM, history)
+        raw = llm(REACT_SYSTEM, history)
         history.append({"role": "model", "content": raw})
 
         # Parse the model's JSON response
@@ -264,10 +259,10 @@ If verdict is PASS, improved_answer can repeat the draft unchanged.
 If verdict is FAIL, improved_answer must fix the identified issues."""
 
 
-def reflect(client: genai.Client, goal: str, draft: str) -> str:
+def reflect(goal: str, draft: str) -> str:
     """Critique the draft answer and return the validated (possibly improved) answer."""
     prompt = f"Goal:\n{goal}\n\nDraft answer:\n{draft}"
-    raw = llm(client, REFLECTION_SYSTEM, [{"role": "user", "content": prompt}])
+    raw = llm(REFLECTION_SYSTEM, [{"role": "user", "content": prompt}])
     cleaned = re.sub(r"```[a-z]*\n?", "", raw).strip("` \n")
     try:
         parsed = json.loads(cleaned)
@@ -289,7 +284,7 @@ def reflect(client: genai.Client, goal: str, draft: str) -> str:
 # ORCHESTRATOR  (ties all four patterns together)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_agent(client: genai.Client, goal: str) -> str:
+def run_agent(goal: str) -> str:
     """
     Full agent loop:
         1. Planning   — decompose goal into steps
@@ -301,7 +296,7 @@ def run_agent(client: genai.Client, goal: str) -> str:
     print(f"{'═' * 65}")
 
     # ── 1. PLANNING ───────────────────────────────────────────────────────────
-    steps = plan(client, goal)
+    steps = plan(goal)
     print(f"\n[plan] {len(steps)} steps:")
     for i, s in enumerate(steps, 1):
         print(f"  {i}. {s}")
@@ -310,7 +305,7 @@ def run_agent(client: genai.Client, goal: str) -> str:
     results: list[str] = []
     for i, step in enumerate(steps, 1):
         print(f"\n[step {i}/{len(steps)}] {step}")
-        answer = react_step(client, step)
+        answer = react_step(step)
         results.append(f"Step {i} ({step}): {answer}")
         print(f"  → {answer}")
 
@@ -320,7 +315,7 @@ def run_agent(client: genai.Client, goal: str) -> str:
     # ── 3. REFLECTION ─────────────────────────────────────────────────────────
     print(f"\n{'─' * 65}")
     print("[reflection] Validating final answer...")
-    final = reflect(client, goal, draft)
+    final = reflect(goal, draft)
 
     print(f"\n{'═' * 65}")
     print("FINAL ANSWER")
@@ -340,7 +335,6 @@ DEMO_GOALS = [
 
 
 def main() -> None:
-    client = genai.Client(api_key=SETTINGS.require_api_key())
     print("Agent Patterns Exercise — Planning + ReAct + Tool Use + Reflection")
     print(f"Model: {SETTINGS.model}\n")
     print("Available demo goals:")
@@ -352,7 +346,7 @@ def main() -> None:
     if not goal:
         goal = DEMO_GOALS[0]
 
-    run_agent(client, goal)
+    run_agent(goal)
 
 
 if __name__ == "__main__":
