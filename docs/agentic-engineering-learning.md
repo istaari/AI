@@ -2196,6 +2196,7 @@ flowchart LR
 ```
 
 Track `error_type` consistently — when 30% of corrections are `factual_error`, that is a retrieval/grounding problem, not a prompt problem.
+
 ---
 
 ## 14. Cost & Latency Optimization
