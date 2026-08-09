@@ -1211,29 +1211,387 @@ flowchart LR
 
 ## 4. Convolutional Neural Networks (CNNs)
 
+> **30-second mental model:** A CNN is a neural network that slides small pattern-detectors (**filters**) across an image instead of connecting every pixel to every neuron. This buys two superpowers: it looks for the *same* pattern everywhere (an edge is an edge wherever it appears), and it uses far fewer weights. Early layers spot edges → middle layers spot shapes → deep layers spot whole objects.
+
+**Analogy — scanning a photo with a magnifying glass 🔍.** You don't judge a photo by memorizing every pixel at once. You sweep a small lens across it looking for features — an eye here, a wheel there — then combine what you found. A CNN does exactly this: the same lens (filter) slides everywhere, and stacking layers combines simple features into complex ones.
+
+```mermaid
+flowchart LR
+    IMG["🖼️ Image<br/>(pixels)"] --> C1["Conv + ReLU<br/>edges"]
+    C1 --> P1["Pool<br/>shrink"]
+    P1 --> C2["Conv + ReLU<br/>shapes / textures"]
+    C2 --> P2["Pool<br/>shrink"]
+    P2 --> C3["Conv<br/>object parts"]
+    C3 --> FC["Flatten +<br/>Dense"]
+    FC --> OUT["🏷️ Class<br/>(cat / dog)"]
+    style C1 fill:#e0f0ff
+    style C2 fill:#e0f0ff
+    style C3 fill:#e0f0ff
+    style OUT fill:#e0ffe0
+```
+
+> 🔑 **Why not just a plain MLP on pixels?** A 224×224 colour image = 150,528 inputs. Fully connecting that to even 1,000 neurons = 150 million weights *in the first layer alone* — and it would have to relearn "what an edge looks like" separately for every pixel location. CNNs fix both problems at once with **weight sharing** and **local connectivity**.
+
+---
+
+### Why CNNs beat MLPs on images — the two key ideas
+
+| Idea | What it means | Payoff |
+|---|---|---|
+| **Local connectivity** | Each neuron looks at a small patch, not the whole image | Fewer weights; matches how visual features are local |
+| **Weight sharing** | The *same* filter slides across all positions | Learn a pattern once, detect it anywhere (**translation invariance**) |
+| **Hierarchy** | Stack layers: edges → textures → parts → objects | Complex concepts built from simple reusable pieces |
+
+💡 **Rule of thumb:** grid-structured data where *position is relative, not absolute* (images, audio spectrograms, even some text) → reach for convolutions.
+
+---
+
 ### CNN Concepts
 
 #### Convolution
 
+> **One-line intuition:** Slide a small grid of weights (the filter) over the input; at each position, multiply-and-sum to produce one output number. The result is a **feature map** showing *where* that pattern appears.
+
+**Analogy — a rubber stamp that scores matches 🔎.** Press the same stamp at every location; where the image matches the stamp's pattern, the score is high; where it doesn't, low. The map of scores tells you where the feature lives.
+
+```mermaid
+flowchart LR
+    I["Input patch<br/>(3×3 window)"] --> M["⊙ element-wise<br/>multiply with filter"]
+    M --> S["Σ sum<br/>→ 1 number"]
+    S --> F["Feature map<br/>cell"]
+    F -.slide window.-> I
+    style S fill:#fff0c0
+    style F fill:#e0ffe0
+```
+
+**🔢 Worked example — 3×3 input, 2×2 filter.** Element-wise multiply the filter over each window, then sum:
+
+$$
+\text{Input} = \begin{bmatrix} 1 & 2 & 0 \\ 3 & 1 & 2 \\ 0 & 1 & 1 \end{bmatrix},\qquad
+\text{Filter} = \begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix}
+$$
+
+Top-left window $\begin{bmatrix}1&2\\3&1\end{bmatrix}$ → $(1{\cdot}1)+(2{\cdot}0)+(3{\cdot}0)+(1{\cdot}1) = \mathbf{2}$
+
+Sliding the 2×2 filter over the 3×3 input (stride 1) gives a **2×2 output**:
+
+$$
+\text{Feature map} = \begin{bmatrix} 2 & 4 \\ 4 & 2 \end{bmatrix}
+$$
+
+(top-right = $2{+}2=4$, bottom-left = $3{+}1=4$, bottom-right = $1{+}1=2$)
+
+> 🔑 The filter's **weights are learned** by backprop — the network discovers *which* patterns are worth detecting (this filter happens to detect a diagonal). You don't hand-design them.
+
+> 📐 **Output size formula:** for input $n$, filter $f$, padding $p$, stride $s$: $\;\text{out} = \left\lfloor \frac{n - f + 2p}{s} \right\rfloor + 1$. Here $\frac{3-2+0}{1}+1 = 2$. ✅
+
+---
+
 #### Kernel / Filter
+
+> **One-line intuition:** The kernel *is* the small weight grid you convolve with. "Kernel" and "filter" are used interchangeably — a filter is just a stack of kernels, one per input channel.
+
+**Analogy — a set of specialist detectors 🕵️.** One filter fires on vertical edges, another on horizontal edges, another on a patch of red. A conv layer has *many* filters, each producing its own feature map — together they describe the image from many angles at once.
+
+| Term | Meaning |
+|---|---|
+| **Kernel** | A single 2D weight grid (e.g. 3×3) applied to one channel |
+| **Filter** | The full stack of kernels across all input channels → produces **one** feature map |
+| **# filters** | How many feature maps the layer outputs (the output *depth*) |
+
+```mermaid
+flowchart LR
+    IN["Input<br/>3 channels (RGB)"] --> F1["Filter 1<br/>(3×3×3)"] --> M1["Feature map 1<br/>(edges)"]
+    IN --> F2["Filter 2<br/>(3×3×3)"] --> M2["Feature map 2<br/>(color blob)"]
+    IN --> Fn["Filter N"] --> Mn["Feature map N"]
+    style M1 fill:#e0ffe0
+    style M2 fill:#e0ffe0
+```
+
+**🔢 Parameter count.** A conv layer with 32 filters of size $3\times3$ over a 3-channel (RGB) input:
+
+$$(3 \times 3 \times 3 + 1) \times 32 = 28 \times 32 = \mathbf{896} \text{ params}$$
+
+(the $+1$ is the bias per filter.) Compare to a dense layer on the same image — **millions** of weights. That's the weight-sharing saving.
+
+| Common kernel size | Effect |
+|---|---|
+| **1×1** | Mixes channels, no spatial context (cheap depth change) |
+| **3×3** | ⭐ The modern default — small, stackable, efficient |
+| **5×5, 7×7** | Larger receptive field per layer, more params (used in early layers) |
+
+> 💡 **Two 3×3 convs stacked** see the same 5×5 region as one 5×5 conv — but with fewer parameters ($2{\times}9=18$ vs $25$) and an extra nonlinearity. This is why modern nets favor small stacked kernels.
+
+---
 
 #### Padding
 
+> **One-line intuition:** Add a border of zeros around the input so the filter can sit on edge pixels — controlling whether the output shrinks.
+
+**Analogy — a picture frame 🖼️.** Without a frame (padding), the filter can't center on the corner pixels, so edges get under-sampled and the image shrinks each layer. Add a border of zeros and the output keeps its size — and corner pixels get fair treatment.
+
+```
+No padding ("valid"):          Zero padding ("same"):
+                               0 0 0 0 0
+  ┌───────┐                    0 ┌───────┐ 0
+  │ image │ → output smaller   0 │ image │ 0 → output same size
+  └───────┘                    0 └───────┘ 0
+                               0 0 0 0 0
+```
+
+| Type | What it does | Output size |
+|---|---|---|
+| **Valid** (no padding) | Filter only where it fully fits | **Shrinks** each layer |
+| **Same** (zero-pad) | Pad so output = input size | **Preserved** |
+
+**🔢 Example.** Input $5\times5$, filter $3\times3$, stride 1:
+- **Valid** ($p=0$): $\frac{5-3}{1}+1 = 3$ → output $3\times3$ (shrank)
+- **Same** ($p=1$): $\frac{5-3+2}{1}+1 = 5$ → output $5\times5$ (preserved) ✅
+
+> ⚠️ **Why it matters:** without padding, a deep net's feature maps shrink toward nothing, and corner/edge information is systematically lost. "Same" padding is the common default for keeping spatial dimensions stable through many layers.
+
+---
+
 #### Stride
+
+> **One-line intuition:** How many pixels the filter jumps each step. Stride 1 = overlap every pixel; stride 2 = skip every other → the output is roughly halved.
+
+**Analogy — footstep size while pacing a room 🚶.** Small steps (stride 1) = detailed, slow, big output. Big steps (stride 2) = coarse, fast, downsampled output. Stride is a built-in way to *shrink* the feature map without a separate pooling layer.
+
+```
+Row of 5 pixels:  [ a  b  c  d  e ]
+
+Stride 1 (windows overlap, step 1 pixel):
+  [a b c]                    → 3 windows, full detail
+    [b c d]
+      [c d e]
+
+Stride 2 (windows skip, step 2 pixels):
+  [a b c]                    → 2 windows, downsampled
+      [c d e]
+```
+
+**🔢 Example.** Input $5\times5$, filter $3\times3$, no padding:
+- **Stride 1**: $\frac{5-3}{1}+1 = 3$ → output $3\times3$
+- **Stride 2**: $\frac{5-3}{2}+1 = 2$ → output $2\times2$ (downsampled)
+
+| Stride | Output | Use |
+|---|---|---|
+| **1** | Full resolution | Preserve detail (most conv layers) |
+| **2** | ~½ size | Downsample (replaces pooling in modern nets) |
+
+> 💡 **Strided convolutions** are increasingly used *instead* of pooling — they downsample AND learn how to do it (pooling is fixed). Trade-off: larger strides lose fine detail.
+
+---
 
 #### Pooling
 
+> **One-line intuition:** Shrink each feature map by summarizing small regions — keep the strongest signal (max) or the average — making the network smaller and more robust to tiny shifts.
+
+**Analogy — a photo thumbnail 📸.** A thumbnail throws away pixels but keeps the gist. Pooling downsamples the feature map: you lose exact positions but keep *what* was detected, and you gain robustness — the cat is still a cat if it moves two pixels left.
+
+```mermaid
+flowchart LR
+    A["Feature map<br/>4×4"] --> MP["Max Pool<br/>2×2, stride 2"]
+    MP --> B["2×2<br/>(keeps strongest)"]
+    style B fill:#e0ffe0
+```
+
+**🔢 Worked example — 2×2 Max Pool vs Average Pool** on a $4\times4$ map:
+
+$$
+\begin{bmatrix} 1 & 3 & 2 & 4 \\ 5 & 6 & 1 & 2 \\ 1 & 2 & 3 & 0 \\ 0 & 1 & 4 & 5 \end{bmatrix}
+\;\xrightarrow{\text{2×2 pool}}\;
+\text{Max} = \begin{bmatrix} 6 & 4 \\ 2 & 5 \end{bmatrix},\quad
+\text{Avg} = \begin{bmatrix} 3.75 & 2.25 \\ 1.0 & 3.0 \end{bmatrix}
+$$
+
+Top-left window $\begin{bmatrix}1&3\\5&6\end{bmatrix}$: max = **6**, average = $(1{+}3{+}5{+}6)/4 = \mathbf{3.75}$.
+
+| | Max Pooling | Average Pooling |
+|---|---|---|
+| Keeps | Strongest activation | Overall level |
+| Best for | Detecting "was the feature present?" | Smooth summaries, final layers |
+| Popularity | ⭐ Most common | Global Avg Pool (before classifier) |
+
+> 🔑 **No learnable parameters** — pooling is a fixed operation. Its jobs: (1) shrink compute, (2) add small **translation invariance** (a feature shifting slightly still maps to the same pooled cell).
+
+> ⚠️ Pooling discards spatial precision — bad for tasks needing exact localization (segmentation). Those often skip pooling or use strided/dilated convs instead.
+
+---
+
 #### Receptive Field
+
+> **One-line intuition:** The region of the *original input* that a single deep-layer neuron can "see." It grows as you stack layers — that's how deep neurons perceive whole objects from tiny 3×3 filters.
+
+**Analogy — a pyramid of witnesses 🔺.** A layer-1 neuron interviews 3 pixels. A layer-2 neuron interviews three layer-1 neurons — indirectly hearing about a wider patch. By deep layers, one neuron's "testimony" covers most of the image, even though every filter is only 3×3.
+
+```mermaid
+flowchart TB
+    L3["Layer 3 neuron<br/>sees 7×7 of input 👁️"] --> L2["Layer 2 neurons<br/>each see 5×5"]
+    L2 --> L1["Layer 1 neurons<br/>each see 3×3"]
+    L1 --> IN["Input pixels"]
+    style L3 fill:#e0ffe0
+    style IN fill:#e0f0ff
+```
+
+**🔢 How it grows.** Stacking 3×3 filters (stride 1), the receptive field expands by 2 each layer:
+
+| After layer | Receptive field | Sees |
+|---|---|---|
+| 1 | 3×3 | tiny edge |
+| 2 | 5×5 | corner / curve |
+| 3 | 7×7 | small shape |
+| … | grows linearly (fast with stride/pooling) | whole object |
+
+> 💡 **Why depth matters for vision:** a single 3×3 filter can never see a whole face. But 20 stacked layers give a receptive field covering the entire image — the network *builds up* global understanding from local views. Downsampling (stride/pooling) and dilation (below) grow it even faster.
+
+---
 
 #### Depthwise Separable Convolution
 
+> **One-line intuition:** Split a normal convolution into two cheap steps — filter each channel independently (**depthwise**), then mix channels with 1×1 convs (**pointwise**). Same job, a fraction of the compute.
+
+**Analogy — divide and conquer a mural 🎨.** Instead of one artist painting every colour-and-shape combination at once (expensive), first have each colour-specialist paint their own layer (depthwise), then a mixer combines the layers into the final image (pointwise). Two simple passes replace one huge one.
+
+```mermaid
+flowchart LR
+    IN["Input<br/>H×W×C"] --> DW["Depthwise<br/>one 3×3 per channel<br/>(spatial only)"]
+    DW --> PW["Pointwise<br/>1×1 conv<br/>(mix channels)"]
+    PW --> OUT["Output<br/>H×W×C'"]
+    style DW fill:#e0f0ff
+    style PW fill:#fff0c0
+    style OUT fill:#e0ffe0
+```
+
+**🔢 The compute saving.** Standard conv vs depthwise-separable, for $3\times3$ filters, $C=16$ input channels, $C'=32$ output channels, on one spatial position:
+
+| | Multiplications per position |
+|---|---|
+| **Standard conv** | $3 \times 3 \times 16 \times 32 = \mathbf{4{,}608}$ |
+| **Depthwise** ($3{\times}3$ per channel) | $3 \times 3 \times 16 = 144$ |
+| **Pointwise** ($1{\times}1$ mix) | $1 \times 1 \times 16 \times 32 = 512$ |
+| **Separable total** | $144 + 512 = \mathbf{656}$ |
+
+→ **~7× fewer** operations for nearly the same expressive power. ✅
+
+> 🔑 This is the core trick behind **MobileNet** and **EfficientNet** — it makes CNNs small and fast enough to run on phones. The bigger the channel count, the larger the saving.
+
+---
+
 #### Dilated Convolution
+
+> **One-line intuition:** Spread the filter's taps apart with gaps, so it covers a wider area *without* more weights or losing resolution. Also called *atrous* ("with holes") convolution.
+
+**Analogy — a comb with wider teeth 🪮.** A normal 3×3 filter touches 3 adjacent pixels. Add gaps (dilation) and those same 3 taps now span a 5- or 7-pixel width — seeing more context with the same number of weights, and without downsampling.
+
+```
+Dilation 1 (normal):     Dilation 2 (gaps):
+  ▓ ▓ ▓                    ▓ _ ▓ _ ▓
+  covers 3 px              covers 5 px, same 3 weights
+```
+
+**🔢 Effective size.** A $3\times3$ kernel with dilation rate $d$ has effective size $\;f_{\text{eff}} = f + (f-1)(d-1)$:
+
+| Dilation $d$ | Effective kernel | Weights |
+|---|---|---|
+| 1 | 3×3 | 9 |
+| 2 | 5×5 | **still 9** |
+| 4 | 9×9 | **still 9** |
+
+> 💡 **Why use it:** grow the receptive field *fast* while keeping full resolution — crucial for **semantic segmentation** (label every pixel) and **audio** (WaveNet), where pooling's lost detail would hurt.
+
+> ⚠️ **Gridding artifact:** stacking the same dilation rate repeatedly leaves gaps that never get sampled. Fix by varying dilation rates across layers (e.g. 1, 2, 5).
+
+---
 
 ### CNN Architectures
 
+> **The story of depth:** early CNNs (LeNet, AlexNet, VGG) simply stacked convs — but past ~20 layers, accuracy got *worse*, not better (the **degradation problem**). ResNet cracked this with skip connections; EfficientNet then asked "given a compute budget, how should we scale?"
+
+```mermaid
+flowchart LR
+    LN["LeNet (1998)<br/>digits"] --> AN["AlexNet (2012)<br/>ImageNet win 🏆"]
+    AN --> VGG["VGG (2014)<br/>deep, uniform 3×3"]
+    VGG --> RN["ResNet (2015)<br/>skip connections<br/>→ 100s of layers"]
+    RN --> EN["EfficientNet (2019)<br/>balanced scaling"]
+    style RN fill:#e0ffe0
+    style EN fill:#e0f0ff
+```
+
 #### ResNet
 
+> **One-line intuition:** Add **skip connections** that let a layer's input jump straight to its output, so the block only has to learn the *residual* (the change) — enabling networks hundreds of layers deep.
+
+**Analogy — an express lane on the highway 🛣️.** Without it, every car (gradient) must crawl through every local street (layer), losing energy at each stop. The skip connection is an express lane: information and gradients flow straight through, so even a 152-layer network trains cleanly.
+
+*(This is the same residual idea from Section 3 — here's how it built the most influential vision architecture.)*
+
+$$y = F(x) + x$$
+
+```mermaid
+flowchart LR
+    X["x"] --> F["Conv → ReLU → Conv<br/>learns residual F(x)"]
+    X -->|skip / identity| ADD((+))
+    F --> ADD
+    ADD --> Y["y = F(x) + x"]
+    style ADD fill:#fff0c0
+    style Y fill:#e0ffe0
+```
+
+**The problem it solved — degradation:**
+
+```
+Plain net:   20 layers → 30 layers → accuracy DROPS ❌  (not overfitting — training error rises too)
+ResNet:      Add skips → 152 layers → accuracy keeps IMPROVING ✅
+```
+
+| | Plain deep net | ResNet |
+|---|---|---|
+| Gradient path | Through every layer (decays) | **Skip = gradient highway** |
+| Easy to learn "do nothing"? | Hard (must learn identity) | Trivial ($F(x){=}0 \Rightarrow y{=}x$) |
+| Practical depth | ~20 layers | **152+** (even 1000) |
+
+**🔢 Intuition.** If a block isn't helpful, it just needs to drive $F(x) \to 0$, giving $y = x$ (identity). Learning "output zero" is far easier than learning an exact identity mapping through nonlinear layers — so extra depth never *hurts*.
+
+> 🔑 ResNet won ImageNet 2015 and is *the* backbone that made very deep learning practical. Skip connections now appear everywhere — including inside every Transformer block (Section 6).
+
+---
+
 #### EfficientNet
+
+> **One-line intuition:** Instead of scaling a network's depth, width, or resolution in isolation, EfficientNet scales all three *together* in a fixed balanced ratio (**compound scaling**) — getting far better accuracy per FLOP.
+
+**Analogy — cooking for more guests 👨‍🍳.** If you double the guests, you don't just triple the rice and ignore everything else — you scale rice, curry, *and* plates proportionally. EfficientNet scales the three network "ingredients" in harmony rather than maxing out one.
+
+```mermaid
+flowchart TB
+    Q["Bigger compute budget?"] --> D["↑ Depth<br/>(more layers)"]
+    Q --> W["↑ Width<br/>(more channels)"]
+    Q --> R["↑ Resolution<br/>(bigger input)"]
+    D & W & R --> C["Compound scaling:<br/>all three by fixed ratio φ"]
+    C --> E["EfficientNet<br/>best accuracy / FLOP ✅"]
+    style C fill:#fff0c0
+    style E fill:#e0ffe0
+```
+
+**The three scaling dimensions:**
+
+| Dimension | Scale up → | Risk if scaled alone |
+|---|---|---|
+| **Depth** (layers) | Richer features | Vanishing gradient, diminishing returns |
+| **Width** (channels) | More fine-grained features | Saturates; hard to capture high-level patterns |
+| **Resolution** (input px) | More detail | Compute explodes; gains fade |
+
+**🔢 Compound scaling rule.** Given a budget coefficient $\phi$, scale each dimension by a fixed base raised to $\phi$:
+
+$$\text{depth} = \alpha^\phi,\quad \text{width} = \beta^\phi,\quad \text{resolution} = \gamma^\phi \qquad \text{s.t. } \alpha\cdot\beta^2\cdot\gamma^2 \approx 2$$
+
+Each unit of $\phi$ roughly **doubles the FLOPs**, split optimally across all three — instead of dumping it all into depth.
+
+> 💡 **Result:** EfficientNet-B7 matched the best prior ImageNet accuracy using **~8× fewer parameters and ~6× less compute**. It also builds on **depthwise separable convolutions** (above) for its efficient building blocks.
+
+> 🔑 **Takeaway:** the win wasn't a fancy new layer — it was *balanced scaling*. When you have more compute, grow depth, width, and resolution together, not just one.
 
 ---
 
