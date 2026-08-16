@@ -141,21 +141,6 @@
     - [Scaling Laws](#scaling-laws)
     - [Mixture of Experts (MoE)](#mixture-of-experts-moe)
     - [KV Cache](#kv-cache)
-
-- [10. High-Frequency Interview Comparisons](#10-high-frequency-interview-comparisons)
-  - [Sequence Models](#sequence-model-comparisons)
-    - [CNN vs RNN](#cnn-vs-rnn)
-    - [RNN vs LSTM](#rnn-vs-lstm)
-    - [LSTM vs GRU](#lstm-vs-gru)
-    - [RNN vs Transformer](#rnn-vs-transformer)
-  - [Transformers & LLMs](#transformer-llm-comparisons)
-    - [Attention vs Self-Attention](#attention-vs-self-attention)
-    - [Encoder-only vs Encoder-Decoder vs Decoder-only](#encoder-only-vs-encoder-decoder-vs-decoder-only)
-    - [LM vs LLM](#lm-vs-llm)
-    - [Pretraining vs Fine-Tuning](#pretraining-vs-fine-tuning)
-    - [Instruction Tuning vs In-Context Learning](#instruction-tuning-vs-in-context-learning)
-    - [LoRA vs Full Fine-Tuning](#lora-vs-full-fine-tuning)
-
 ---
 
 ## 1. Neural Network Fundamentals
@@ -3829,35 +3814,3 @@ $\text{cache} = 2 \times n_{\text{layers}} \times n_{\text{tokens}} \times d_{\t
 > 🔑 The KV cache is the **#1 inference optimization** in every production LLM serving stack — it turns quadratic-per-token generation into linear-per-token.
 
 > 💡 Because the cache can balloon with long context, techniques like **Multi-Query Attention (MQA)** and **Grouped-Query Attention (GQA)** share K/V across attention heads to shrink it — a major reason modern models can serve long contexts cheaply.
-
----
-
-## 10. High-Frequency Interview Comparisons
-
-### Sequence Model Comparisons
-
-#### CNN vs RNN
-
-#### RNN vs LSTM
-
-#### LSTM vs GRU
-
-#### RNN vs Transformer
-
-### Transformer & LLM Comparisons
-
-#### Attention vs Self-Attention
-
-#### Encoder-only vs Encoder-Decoder vs Decoder-only
-
-#### LM vs LLM
-
-#### Pretraining vs Fine-Tuning
-
-#### Instruction Tuning vs In-Context Learning
-
-#### LoRA vs Full Fine-Tuning
-
----
-
-*Progress through sections 1 → 9 in order, then use section 10 as a revision checklist before interviews.*
