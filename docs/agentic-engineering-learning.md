@@ -2,6 +2,8 @@
 
 > A foundation-first guide built on principles that outlast any framework or tool.
 
+<img src="assets/agentic_harness.png" alt="Transformer Architecture" width="2000">
+
 ---
 
 ## Table of Contents
