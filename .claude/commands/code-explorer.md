@@ -1,9 +1,10 @@
 ---
 description: Analyze code at any scope — file, package, or project — to understand, question, and learn from it. Pass a local path or a GitHub URL (file, directory, or repo). Single files are analyzed inline; packages and projects are written to docs/.
 argument-hint: <file.java | src/package/ | . | https://github.com/owner/repo/...>
+disable-model-invocation: true
 ---
 
-# /code-exp — Code Explorer
+# /code-explorer — Code Explorer
 
 **Goal:** help you understand, question, and reason about code you built with LLMs — not just describe or rewrite it.
 
@@ -14,12 +15,12 @@ argument-hint: <file.java | src/package/ | . | https://github.com/owner/repo/...
 If `$ARGUMENTS` is empty or `--help`, print the following and stop:
 
 ```
-/code-exp — Code Explorer
+/code-explorer — Code Explorer
 ──────────────────────────────────────────────────────────────────
 Analyze code at any scope to understand, question, and learn from it.
 
 USAGE
-  /code-exp <target>
+  /code-explorer <target>
 
 TARGETS
   Single file   Path with a file extension
@@ -37,6 +38,7 @@ TARGETS
 
 FLAGS
   --shallow     Quick overview: 3 sections instead of full analysis
+  --full        Force full analysis even on previously cached targets
 
 OUTPUT
   Single file  → inline in this conversation
@@ -75,22 +77,40 @@ Everything else.
 
 ## Step 2.5 — Load Project Context
 
-If `.claude/CLAUDE.md` exists and is non-empty:
-- Read it and extract any architecture notes, known patterns, or prior analysis summaries (look for sections like `## Code Explorer Cache` or any architecture/conventions block)
-- Store as `KNOWN_CONTEXT` — pass this verbatim to every agent prompt under a `KNOWN_CONTEXT:` block so agents skip re-discovering already-documented facts
+**Read `.claude/CLAUDE.md`** if it exists and is non-empty:
+- Extract architecture notes, known patterns, and prior analysis summaries (sections like `## Code Explorer Cache`)
+- Store as `KNOWN_CONTEXT` — pass verbatim to every agent prompt so agents skip re-discovering documented facts
 
-If it does not exist or is empty: set `KNOWN_CONTEXT = ""` and proceed.
+**Determine the vocabulary context file path (`VOCAB_CONTEXT_PATH`):**
+- Local path → `.claude/CONTEXT.md`
+- GitHub URL → `.claude/context/<owner>-<repo>.md` (e.g., `mattpocock/skills` → `.claude/context/mattpocock-skills.md`)
+
+Read `VOCAB_CONTEXT_PATH` if it exists and is non-empty:
+- Extract patterns, vocabulary terms, anti-patterns, and ADR entries
+- Store as `VOCAB_CONTEXT` — pass verbatim to every agent prompt so agents reference named concepts without re-explaining them
+- If `VOCAB_CONTEXT` contains a `LANGUAGE` entry, **skip Step 3.5 entirely** and use the cached value
+
+**Determine the output docs path (`OUTPUT_BASE`):**
+- Local path → `docs/`
+- GitHub URL → `docs/external/<owner>-<repo>/` (e.g., `docs/external/mattpocock-skills/`)
+
+Create `OUTPUT_BASE` directory if it does not exist.
+
+If neither CLAUDE.md nor VOCAB_CONTEXT_PATH exists or both are empty: set `KNOWN_CONTEXT = ""`, `VOCAB_CONTEXT = ""` and proceed.
 
 ---
 
 ## Step 3 — Detect Scope
 
-**Parse `--shallow` flag first:**
-If `--shallow` is in `$ARGUMENTS`:
-- Set `SHALLOW = true`
-- Remove `--shallow` from the argument before processing the path/URL
+**Parse flags first:**
+- If `--shallow` is in `$ARGUMENTS`: set `SHALLOW = true`, remove from args
+- If `--full` is in `$ARGUMENTS`: set `FULL = true`, remove from args
+- Otherwise: `SHALLOW = false`, `FULL = false`
 
-Otherwise: `SHALLOW = false`
+**Smart shallow default (Package / Project scope only):**
+After detecting scope, if `FULL = false` and `KNOWN_CONTEXT` contains a cache entry for the target package or project:
+- Set `SHALLOW = true` automatically
+- Inform the user: "Cached analysis found — running in shallow mode. Pass `--full` to override."
 
 ### From a GitHub URL
 
@@ -114,7 +134,9 @@ If ambiguous: try `Read` first. If that succeeds → Single File. If it fails �
 
 ## Step 3.5 — Detect Language & Ecosystem
 
-Examine file extensions in the target (single file's extension, or extensions found across the directory/project):
+**Skip if `VOCAB_CONTEXT` already defines `LANGUAGE`** — use the cached value and proceed directly to Step 4.
+
+Otherwise examine file extensions in the target:
 
 | Extensions found | LANGUAGE | ECOSYSTEM_HINTS |
 |-----------------|----------|-----------------|
@@ -141,10 +163,10 @@ Use `get_file_contents` on the selected MCP server.
 
 ## Step 4.5 — Check Existing Analysis (Package / Project only)
 
-Determine the output file path: `docs/<name>.md` (where `<name>` is the directory name for package scope, or the project name for project scope).
+Determine the output file path: `<OUTPUT_BASE>/<name>.md` (where `<name>` is the directory name for package scope, or the project/repo name for project scope).
 
 If this file already exists:
-- Inform the user: "Analysis already exists at `docs/<name>.md`."
+- Inform the user: "Analysis already exists at `<OUTPUT_BASE>/<name>.md`."
 - Ask: "Re-analyze from scratch, or update specific sections? (scratch / update)"
   - **scratch**: proceed normally, overwrite the file
   - **update**: read the existing file, ask which sections to refresh, re-run only those analysis phases, and merge the updates into the existing file
@@ -166,7 +188,7 @@ Read the file (locally or from fetched GitHub content).
 Count the lines in the file:
 - **< 50 lines** → Quick Summary mode: produce only sections 1 (Overview & Mental Model), 4 (Design & Reasoning), and 8 (Learning). Skip the rest.
 - **50–500 lines** → Full 8-section analysis (default).
-- **> 500 lines** → Auto-spawn 2 `code-analysis-worker` agents in parallel even though scope is "single file":
+- **> 500 lines** → Auto-spawn 2 `code-explorer-analyst` agents in parallel even though scope is "single file":
   - Agent 1 — "Structure, responsibilities, flow, and dependencies"
   - Agent 2 — "Quality, failure paths, improvements, and learning"
   Synthesize their output into the full 8-section structure.
@@ -285,6 +307,9 @@ Use LS (or directory listing from GitHub) to identify all source files in the pa
 - File patterns: `*Test.java`, `*Spec.java`, `*Mock*.java`, `*IT.java`, `*.generated.*`, `*Fixture*`
 - Non-source: `*.xml`, `*.json`, `*.yaml`, `*.yml`, `*.md`, `*.txt`, `Dockerfile`, lockfiles
 
+**Group DTO clusters (token saving):**
+Identify files that are pure data containers — classes with only fields, getters, setters, and no logic (matching patterns like `*List.java`, `*Response.java`, `*Request.java`, `*DTO.java`, `*Dto.java`). Do not include these in individual agent FILE_SLICEs. Instead, count them and record a one-line group summary: "N DTO classes — [pattern name, e.g., `@Getter @Setter @JsonIgnoreProperties`], no logic." Include this summary in the Structure section; pass only the summary to agents, not the individual files.
+
 **Build directory tree snapshot:**
 Format the filtered file list as a compact tree (relative paths, one per line). Store as `DIRECTORY_TREE` — include this verbatim in every agent prompt so agents skip their own LS/Glob discovery.
 
@@ -301,18 +326,18 @@ Spawn agents (count from above) in parallel. Assign each a file slice and a focu
 - Agent 3 — "Dependencies, design patterns, and design decisions" (if N > 10)
 - Agent 4 — "Quality, risks, and failure paths" (if N > 20)
 
-Each agent prompt must include: `DIRECTORY_TREE`, `LANGUAGE`, `ECOSYSTEM_HINTS`, `KNOWN_CONTEXT`, `FILE_SLICE`, and the assigned focus.
+Each agent prompt must include: `FILE_SLICE_TREE` (only the subtree relevant to their assigned files — not the full DIRECTORY_TREE), `LANGUAGE`, `ECOSYSTEM_HINTS`, `KNOWN_CONTEXT`, `VOCAB_CONTEXT`, `FILE_SLICE`, and the assigned focus.
 
 **Phase 3 — Read key files:**
 After agents complete, read every file they flag as important to build full understanding before writing.
 
 **Phase 4 — Write output:**
-Determine the package name from the directory name. Create `docs/<package_name>.md`:
+Determine the package name from the directory name. Create `<OUTPUT_BASE>/<package_name>.md`:
 
 ```markdown
 # Package Analysis: `<package_name>`
 
-> Generated by /code-exp | Scope: Package
+> Generated by /code-explorer | Scope: Package
 
 ## Table of Contents
 1. [Package Overview & Mental Model](#1-package-overview--mental-model)
@@ -387,10 +412,24 @@ Alternative designs with trade-offs and small experiments that would clarify the
 1. ...
 2. ...
 3. ...
+
+## 8. This Run Taught Me
+
+**New patterns discovered:**
+- ...
+
+**Terms coined or refined:**
+- ...
+
+**Anti-patterns seen:**
+- ...
+
+**Potential ADRs (improvements that were rejected with a load-bearing reason):**
+- ...
 ```
 
 **Phase 5 — Write architecture summary to CLAUDE.md:**
-Append the following block to `.claude/CLAUDE.md` (create the file if it doesn't exist). Do not overwrite existing content — append only:
+Append to `.claude/CLAUDE.md` (local runs only — skip for GitHub URL runs). Do not overwrite existing content — append only:
 
 ```
 ## Code Explorer Cache
@@ -402,11 +441,14 @@ Append the following block to `.claude/CLAUDE.md` (create the file if it doesn't
 - **Output:** docs/<package_name>.md
 ```
 
----
-
----
-
-### PROJECT
+**Phase 6 — Self-improvement:**
+1. Invoke the `learn-code-explorer` agent, passing:
+   - `ANALYSIS_OUTPUT`: the path of the docs file just written
+   - `TAUGHT_ME`: the full "This Run Taught Me" section from the docs file
+   - `CONTEXT_FILE`: `VOCAB_CONTEXT_PATH` (`.claude/CONTEXT.md` for local, `.claude/context/<owner>-<repo>.md` for GitHub URL)
+2. Ask the user: "Should I record any rejected improvements as ADRs to prevent re-suggesting them in future runs? (yes / no)"
+   - If yes: ask which improvement, then write `.claude/docs/adr/<kebab-title>-<ISO-date>.md` and add a one-line entry to `## Architecture Decisions (ADRs)` in `VOCAB_CONTEXT_PATH`
+   - If no: proceed
 
 **Setup:** create a todo list with the following tasks:
 1. Map project structure
@@ -443,7 +485,7 @@ Spawn agents (count from above) in parallel. Assign each a file slice and a focu
 - Agent 3 — "Design patterns, key architectural decisions, and configuration" (if N > 10)
 - Agent 4 — "Quality, observability, testing, and failure paths" (if N > 20)
 
-Each agent prompt must include: `DIRECTORY_TREE`, `LANGUAGE`, `ECOSYSTEM_HINTS`, `KNOWN_CONTEXT`, `FILE_SLICE`, and the assigned focus.
+Each agent prompt must include: `FILE_SLICE_TREE` (only the subtree relevant to their assigned files), `LANGUAGE`, `ECOSYSTEM_HINTS`, `KNOWN_CONTEXT`, `VOCAB_CONTEXT`, `FILE_SLICE`, and the assigned focus.
 
 **Phase 3 — Read key files:**
 Read all entry points, core service files, and config files flagged by agents.
@@ -452,12 +494,12 @@ Read all entry points, core service files, and config files flagged by agents.
 Use the root directory name, the `name` field from a config file (package.json, pom.xml), or the repo name.
 
 **Phase 5 — Write output:**
-Create `docs/<project_name>.md`:
+Create `<OUTPUT_BASE>/<project_name>.md`:
 
 ```markdown
 # Project Analysis: `<project_name>`
 
-> Generated by /code-exp | Scope: Project
+> Generated by /code-explorer | Scope: Project
 
 ## Table of Contents
 1. [Project Overview & Mental Model](#1-project-overview--mental-model)
@@ -537,10 +579,24 @@ Alternative architectures and designs with trade-offs. Small experiments that he
 
 **What to explore next:**
 - ...
+
+## 8. This Run Taught Me
+
+**New patterns discovered:**
+- ...
+
+**Terms coined or refined:**
+- ...
+
+**Anti-patterns seen:**
+- ...
+
+**Potential ADRs:**
+- ...
 ```
 
 **Phase 6 — Write architecture summary to CLAUDE.md:**
-Append the following block to `.claude/CLAUDE.md` (create if it doesn't exist). Do not overwrite existing content — append only:
+Append to `.claude/CLAUDE.md` (local runs only — skip for GitHub URL runs). Do not overwrite existing content — append only:
 
 ```
 ## Code Explorer Cache
@@ -551,6 +607,15 @@ Append the following block to `.claude/CLAUDE.md` (create if it doesn't exist). 
 - <3–5 bullet points: architectural style, major modules, entry points, key dependencies, notable design decisions>
 - **Output:** docs/<project_name>.md
 ```
+
+**Phase 7 — Self-improvement:**
+1. Invoke the `learn-code-explorer` agent, passing:
+   - `ANALYSIS_OUTPUT`: the path of the docs file just written
+   - `TAUGHT_ME`: the full "This Run Taught Me" section from the docs file
+   - `CONTEXT_FILE`: `VOCAB_CONTEXT_PATH` (`.claude/CONTEXT.md` for local, `.claude/context/<owner>-<repo>.md` for GitHub URL)
+2. Ask the user: "Should I record any rejected improvements as ADRs to prevent re-suggesting them in future runs? (yes / no)"
+   - If yes: ask which improvement, then write `.claude/docs/adr/<kebab-title>-<ISO-date>.md` and add a one-line entry to `## Architecture Decisions (ADRs)` in `VOCAB_CONTEXT_PATH`
+   - If no: proceed
 
 ---
 
@@ -570,6 +635,9 @@ Wrap only the claim itself, not the whole sentence. Example:
 | Principle | How to apply |
 |-----------|-------------|
 | Facts vs. intent | Wrap observed facts with `<mark style="background:#d4edda">…</mark>` and inferred interpretations with `<mark style="background:#fff3cd">…</mark>` — inline on the claim, not as section labels |
+| VOCAB_CONTEXT | Reference terms in VOCAB_CONTEXT by name — do not re-explain concepts already defined there. Say "this follows the [pattern name]" and move on |
+| Depth vocabulary | Use precision terms: **shallow module** (interface nearly as complex as the implementation), **seam** (where behaviour can change without editing that place), **leverage** (capability per unit of interface), **locality** (change concentrates in one place). Replace generic "code smell" or "tight coupling" with these |
+| DTO grouping | Summarize clusters of pure data classes as one group entry — do not analyze each individually |
 | Progressive disclosure | High-level mental model first. Important details second. Internals last |
 | Trade-offs not verdicts | "A is simpler; B handles more cases. Given the context here, A is better *because*..." |
 | Right diagram type | Flow = processes; Sequence = actor interactions; Class = structure; Architecture = system layout |
