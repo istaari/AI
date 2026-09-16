@@ -1,0 +1,44 @@
+[project]
+name = "ai-learning"
+version = "0.1.0"
+description = "AI & ML learning notebooks — LangChain, LangGraph, PyTorch, HuggingFace"
+requires-python = ">=3.11"
+dependencies = [
+    # Jupyter
+    "jupyter>=1.0.0",
+    "notebook>=7.0.0",
+    "ipykernel>=6.0.0",
+
+    # LangChain / LangGraph
+    "langchain-core>=0.3.0",
+    "langchain-google-genai>=2.0.0",
+    "langgraph>=0.2.0",
+    "python-dotenv>=1.0.0",
+
+    # Deep learning
+    "torch>=2.3.0",
+    "torchvision>=0.18.0",
+    "torchaudio>=2.3.0",
+
+    # Numerical & data
+    "numpy>=1.26.0",
+    "scipy>=1.13.0",
+    "pandas>=2.2.0",
+    "matplotlib>=3.9.0",
+    "seaborn>=0.13.0",
+
+    # HuggingFace
+    "transformers>=4.42.0",
+    "datasets>=2.20.0",
+    "tokenizers>=0.19.0",
+    "huggingface-hub>=0.23.0",
+    "peft>=0.11.0",
+    "accelerate>=0.31.0",
+
+    # Evaluation & metrics
+    "evaluate>=0.4.0",
+    "scikit-learn>=1.5.0",
+
+    # Experiment tracking
+    "tensorboard>=2.17.0",
+]
